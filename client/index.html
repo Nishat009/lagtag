@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>LagTag: Netcode Playground</title>
+  <meta name="description" content="A 4-player browser tag game built to show real-time netcode: client-side prediction, server reconciliation, entity interpolation and lag compensation over WebRTC + Socket.IO." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='%23ff3b5c'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="stage">
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div class="hud-top">
+        <div id="timer">1:30</div>
+        <div class="room">room <b id="room-name">-</b> <button id="invite" type="button">Copy invite</button></div>
+      </div>
+      <ol id="scoreboard" aria-label="Time spent as IT (lowest wins)"></ol>
+      <div id="it-banner" hidden>You're IT: tag someone!</div>
+    </div>
+
+    <div id="toast" role="status"></div>
+
+    <div id="round-end" class="card-overlay" hidden>
+      <div class="card">
+        <h2>Round over</h2>
+        <p class="muted">Least time spent as IT wins.</p>
+        <ol id="ranking"></ol>
+        <p class="muted small">Next round starts in a few seconds…</p>
+      </div>
+    </div>
+
+    <div id="touch-controls">
+      <div id="stick"><div id="knob"></div></div>
+      <button id="dash-btn" type="button">DASH</button>
+    </div>
+
+    <div id="lobby" class="card-overlay">
+      <div class="card lobby-card">
+        <h1>LAG<span>TAG</span></h1>
+        <p class="tagline">4-player tag with real game netcode. Play it, then open the <b>Netcode Lab</b> and break the network on purpose.</p>
+        <label class="field">
+          <span>Your name</span>
+          <input id="name" maxlength="16" autocomplete="off" placeholder="e.g. Rafi" />
+        </label>
+        <div class="actions">
+          <button id="play" class="primary" type="button">Quick play</button>
+          <button id="private" type="button">Private room</button>
+        </div>
+        <p id="lobby-error" class="error"></p>
+        <ul class="howto">
+          <li><kbd>WASD</kbd>/<kbd>↑↓←→</kbd> move · <kbd>Space</kbd> dash</li>
+          <li>Whoever is <b class="it">IT</b> chases. Touch someone to pass it on.</li>
+          <li>Least seconds as IT after 90s wins. Bots fill empty seats.</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+
+  <aside id="lab" aria-label="Netcode Lab">
+    <button id="lab-toggle" type="button" title="Toggle Netcode Lab">⚙ Netcode Lab</button>
+    <div class="lab-body">
+      <header>
+        <h2>Netcode Lab</h2>
+        <p>Make the network worse, then turn techniques off one at a time to see what each one does.</p>
+      </header>
+
+      <section>
+        <h3>Live stats</h3>
+        <dl class="stats">
+          <dt>Transport</dt><dd id="st-transport">-</dd>
+          <dt>Round-trip</dt><dd id="st-rtt">-</dd>
+          <dt>Snapshots</dt><dd id="st-snaps">-</dd>
+          <dt>Lost / late</dt><dd id="st-loss">-</dd>
+          <dt>Bandwidth</dt><dd id="st-bw">-</dd>
+          <dt>Unacked</dt><dd id="st-pending">-</dd>
+          <dt>Last correction</dt><dd id="st-error">-</dd>
+          <dt>Interp buffer</dt><dd id="st-buffer">-</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h3>Simulated network</h3>
+        <div class="presets">
+          <button data-preset="lan" type="button">LAN</button>
+          <button data-preset="mobile" type="button">4G</button>
+          <button data-preset="wifi" type="button">Bad Wi-Fi</button>
+          <button data-preset="world" type="button">Overseas</button>
+        </div>
+        <label class="slider"><span>Added latency (RTT)</span><output id="out-rtt"></output>
+          <input id="sl-rtt" type="range" min="0" max="600" step="10" value="0" /></label>
+        <label class="slider"><span>Jitter</span><output id="out-jitter"></output>
+          <input id="sl-jitter" type="range" min="0" max="200" step="5" value="0" /></label>
+        <label class="slider"><span>Packet loss</span><output id="out-loss"></output>
+          <input id="sl-loss" type="range" min="0" max="40" step="1" value="0" /></label>
+      </section>
+
+      <section>
+        <h3>Techniques</h3>
+        <label class="toggle"><input type="checkbox" data-setting="predict" />
+          <span><b>Client-side prediction</b>Your inputs move you instantly instead of waiting a round trip.</span></label>
+        <label class="toggle"><input id="opt-reconcile" type="checkbox" data-setting="reconcile" />
+          <span><b>Server reconciliation</b>Rewind to each server state and replay unacked inputs. Off: rubber-banding.</span></label>
+        <label class="toggle"><input type="checkbox" data-setting="interp" />
+          <span><b>Entity interpolation</b>Others are drawn slightly in the past, blended between snapshots. Off: 20 Hz stutter.</span></label>
+        <label class="slider"><span>Interpolation delay</span><output id="out-interp"></output>
+          <input id="sl-interp" type="range" min="0" max="300" step="10" value="100" /></label>
+        <label class="toggle"><input type="checkbox" data-setting="lagComp" />
+          <span><b>Lag compensation</b>When you're IT, the server rewinds the target to what <i>you</i> saw. Off: “I touched them!”</span></label>
+        <label class="toggle"><input type="checkbox" data-setting="ghosts" />
+          <span><b>Show ghosts</b>Dashed white = server's copy of you. Dotted = raw latest snapshot of others.</span></label>
+        <label class="toggle"><input id="opt-ws" type="checkbox" />
+          <span><b>Force WebSocket</b>Skip the WebRTC data channel and send everything over TCP.</span></label>
+      </section>
+
+      <section>
+        <h3>Event log</h3>
+        <ul id="lab-log"></ul>
+      </section>
+
+      <p class="tip">Try this: set latency to 300 ms and turn prediction off. Every move now waits a round trip. Turn it back on.</p>
+    </div>
+  </aside>
+
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

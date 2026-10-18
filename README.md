@@ -2,6 +2,8 @@
 
 A 4-player tag game you play in the browser. It also shows how online games hide lag.
 
+**Play it live: https://reviewspace-dyln.vercel.app**
+
 ## How to play
 
 - One player is **IT**. IT chases the others, and touching someone makes them IT.

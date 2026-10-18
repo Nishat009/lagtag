@@ -1,4 +1,12 @@
-import { WORLD_W, WORLD_H, RADIUS, OBSTACLES } from '../shared/constants.js';
+import {
+  WORLD_W, WORLD_H, RADIUS, OBSTACLES, PICKUP_RADIUS, PW_SPEED, PW_SHIELD, PW_GHOST, TICK_RATE,
+} from '../shared/constants.js';
+
+const PICKUP_STYLE = {
+  [PW_SPEED]: { color: '#ffd166', icon: '⚡' },
+  [PW_SHIELD]: { color: '#4cc9f0', icon: '🛡' },
+  [PW_GHOST]: { color: '#c77dff', icon: '👻' },
+};
 
 export class Renderer {
   constructor(canvas) {
@@ -50,6 +58,17 @@ export class Renderer {
     this.shake = Math.max(this.shake, amount);
   }
 
+  // A one-shot spray of particles; positions are computed from age, so no
+  // per-frame physics is needed.
+  burst(x, y, colors, n, speed) {
+    const parts = Array.from({ length: n }, (_, i) => {
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.6;
+      const v = speed * (0.4 + Math.random() * 0.8);
+      return { vx: Math.cos(a) * v, vy: Math.sin(a) * v, r: 2 + Math.random() * 3, c: colors[i % colors.length] };
+    });
+    this.addEffect({ type: 'particles', x, y, parts, life: 700 + Math.random() * 200 });
+  }
+
   draw(view) {
     const { ctx } = this;
     const now = performance.now();
@@ -64,6 +83,7 @@ export class Renderer {
     ctx.drawImage(arena, this.ox + sx - arena.pad, this.oy + sy - arena.pad);
     ctx.setTransform(this.scale, 0, 0, this.scale, this.ox + sx, this.oy + sy);
 
+    if (view.pickups) for (const u of view.pickups) this.drawPickup(u, now);
     this.drawTrails(view.players);
     if (view.ghosts) for (const g of view.ghosts) this.drawGhost(g);
     for (const p of view.players) this.drawPlayer(p, now);
@@ -104,7 +124,7 @@ export class Renderer {
     for (const p of players) {
       let t = this.trails.get(p.id);
       if (!t) this.trails.set(p.id, (t = []));
-      t.push({ x: p.x, y: p.y, dash: p.dash > 0 });
+      t.push({ x: p.x, y: p.y, dash: p.dash > 0 || p.pw === PW_SPEED });
       if (t.length > 14) t.shift();
       for (let i = 0; i < t.length; i++) {
         if (!t[i].dash) continue;
@@ -116,6 +136,30 @@ export class Renderer {
       }
     }
     ctx.globalAlpha = 1;
+  }
+
+  drawPickup([, kind, x, y], now) {
+    const st = PICKUP_STYLE[kind];
+    if (!st) return;
+    const { ctx } = this;
+    const bob = Math.sin(now / 260 + x) * 4;
+    const pulse = 0.5 + 0.5 * Math.sin(now / 180 + y);
+    ctx.save();
+    ctx.shadowBlur = 16 + pulse * 14;
+    ctx.shadowColor = st.color;
+    ctx.strokeStyle = st.color;
+    ctx.fillStyle = 'rgba(13,16,32,0.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x, y + bob, PICKUP_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.font = '16px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(st.icon, x, y + bob + 1);
+    ctx.restore();
   }
 
   drawGhost(g) {
@@ -141,8 +185,9 @@ export class Renderer {
   drawPlayer(p, now) {
     const { ctx } = this;
     ctx.save();
+    if (p.pw === PW_GHOST) ctx.globalAlpha = 0.45 + 0.15 * Math.sin(now / 90);
     if (p.isIt) {
-      const pulse = 0.5 + 0.5 * Math.sin(now / 120);
+      const pulse = 0.5 + 0.5 * Math.sin(now / (p.bomb ? 60 : 120));
       ctx.shadowBlur = 30 + pulse * 20;
       ctx.shadowColor = '#ff3b5c';
       ctx.strokeStyle = '#ff3b5c';
@@ -179,6 +224,35 @@ export class Renderer {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    if (p.shield) {
+      ctx.save();
+      ctx.strokeStyle = '#4cc9f0';
+      ctx.fillStyle = 'rgba(76,201,240,0.12)';
+      ctx.shadowBlur = 14;
+      ctx.shadowColor = '#4cc9f0';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = now / 900 + (i * Math.PI) / 3;
+        const r = RADIUS + 11;
+        if (i === 0) ctx.moveTo(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r);
+        else ctx.lineTo(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (p.pw === PW_SPEED) {
+      ctx.strokeStyle = '#ffd166';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, RADIUS + 4, now / 80, now / 80 + Math.PI * 0.7);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, RADIUS + 4, now / 80 + Math.PI, now / 80 + Math.PI * 1.7);
+      ctx.stroke();
+    }
 
     ctx.textAlign = 'center';
     ctx.font = '700 13px "Space Grotesk", sans-serif';
@@ -188,6 +262,16 @@ export class Renderer {
       ctx.font = '800 14px "Space Grotesk", sans-serif';
       ctx.fillStyle = '#0b0d18';
       ctx.fillText('IT', p.x, p.y + 5);
+    }
+    if (p.bomb) {
+      const secs = p.bomb / TICK_RATE;
+      const flash = secs < 1.5 ? Math.sin(now / 50) > 0 : Math.sin(now / 150) > 0;
+      const by = p.y - RADIUS - 34;
+      ctx.font = '22px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+      ctx.fillText('💣', p.x, by);
+      ctx.font = '800 12px "JetBrains Mono", monospace';
+      ctx.fillStyle = flash ? '#ff3b5c' : '#ffd166';
+      ctx.fillText(secs.toFixed(1), p.x + 24, by - 4);
     }
     ctx.restore();
   }
@@ -220,6 +304,36 @@ export class Renderer {
         ctx.fillStyle = '#ff9f1c';
         ctx.textAlign = 'center';
         ctx.fillText(e.label, e.x, e.y - RADIUS - 10);
+      } else if (e.type === 'particles') {
+        const t = (now - e.born) / 1000;
+        const travel = (1 - Math.exp(-t * 4)) / 4; // drag-damped distance
+        ctx.globalAlpha = 1 - k;
+        for (const q of e.parts) {
+          ctx.fillStyle = q.c;
+          ctx.beginPath();
+          ctx.arc(e.x + q.vx * travel, e.y + q.vy * travel + 40 * t * t, q.r * (1 - k * 0.6), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (e.type === 'text') {
+        const ease = 1 - (1 - Math.min(1, k * 4)) ** 3;
+        ctx.globalAlpha = k < 0.7 ? 1 : 1 - (k - 0.7) / 0.3;
+        ctx.font = `800 ${Math.round(e.size * (0.6 + 0.4 * ease))}px "Space Grotesk", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(7,8,15,0.8)';
+        ctx.strokeText(e.text, e.x, e.y - k * 40);
+        ctx.fillStyle = e.color;
+        ctx.fillText(e.text, e.x, e.y - k * 40);
+      } else if (e.type === 'boom') {
+        ctx.globalAlpha = 1 - k;
+        const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, RADIUS + k * 160);
+        g.addColorStop(0, 'rgba(255,240,200,0.95)');
+        g.addColorStop(0.4, 'rgba(255,159,28,0.7)');
+        g.addColorStop(1, 'rgba(255,59,92,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, RADIUS + k * 160, 0, Math.PI * 2);
+        ctx.fill();
       }
       ctx.restore();
     }

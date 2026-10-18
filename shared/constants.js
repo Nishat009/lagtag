@@ -19,6 +19,28 @@ export const DASH_COOLDOWN = 75;
 export const FREEZE_TICKS = 60; // newly tagged player is frozen for 1s
 export const IMMUNE_TICKS = 120; // previous "it" can't be tagged straight back
 
+// Power-ups. Speed and ghost change movement, so they live in the physics
+// state (pw = kind, pt = ticks left) and prediction replays them exactly.
+// The shield only affects tagging, so it stays server-side.
+export const PW_SPEED = 1;
+export const PW_SHIELD = 2;
+export const PW_GHOST = 3;
+export const SPEED_BOOST_MUL = 1.4;
+export const SPEED_TICKS = 4 * 60;
+export const GHOST_TICKS = 3 * 60; // walk through obstacles
+export const SHIELD_GRACE = 60; // after a shield pops, the holder can't be tagged for 1s
+export const PICKUP_RADIUS = 16;
+export const PICKUP_EVERY = 5 * 60;
+export const MAX_PICKUPS = 3;
+
+// Hot potato: in the last BOMB_TICKS of a round a fuse burns on whoever is IT.
+// It doesn't reset on a tag, so pass it on fast. When it blows, the holder
+// takes a time penalty and is stunned.
+export const BOMB_TICKS = 15 * 60;
+export const BOMB_FUSE_MIN = 4 * 60;
+export const BOMB_FUSE_MAX = 6 * 60;
+export const BOMB_PENALTY = 5 * 60;
+
 export const MAX_PLAYERS = 4;
 export const ROUND_TICKS = 90 * TICK_RATE;
 export const INTERMISSION_TICKS = 5 * TICK_RATE;

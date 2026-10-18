@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createState, step } from '../shared/physics.js';
-import { K_RIGHT, K_DOWN, K_DASH, TICK_MS, SNAPSHOT_EVERY } from '../shared/constants.js';
+import {
+  K_RIGHT, K_DOWN, K_DASH, TICK_MS, SNAPSHOT_EVERY, PW_SPEED, BOMB_TICKS, BOMB_PENALTY,
+} from '../shared/constants.js';
 import { Predictor } from '../client/prediction.js';
 import { Interpolator } from '../client/interpolation.js';
 import { History } from '../server/history.js';
@@ -137,4 +139,48 @@ test('lag compensation rejects claims that miss even in the past', () => {
   room.onClaim(human, { id: target.id, rt: room.time - 100, seq: 0 });
   room.update();
   assert.equal(room.it, human.id);
+});
+
+// ---- power-ups & hot potato -------------------------------------------------------
+
+test('walking over a pickup grants its power', () => {
+  const { room, human } = roomWithHuman();
+  room.it = [...room.players.keys()].find((id) => id !== human.id);
+  human.state.x = 400; human.state.y = 450;
+  room.pickups = [{ id: 99, kind: PW_SPEED, x: 410, y: 450 }];
+  room.update();
+  assert.equal(room.pickups.find((u) => u.id === 99), undefined, 'pickup consumed');
+  assert.equal(human.state.pw, PW_SPEED);
+  assert.ok(human.state.pt > 0);
+});
+
+test('a shield blocks one tag and grants a short grace period', () => {
+  const { room, human, target } = roomWithHuman();
+  room.pickups = [];
+  target.shield = true;
+  human.state.x = 400; human.state.y = 450;
+  target.state.x = 430; target.state.y = 450;
+  room.update();
+  assert.equal(room.it, human.id, 'tag was blocked');
+  assert.equal(target.shield, false, 'shield used up');
+  room.update();
+  assert.equal(room.it, human.id, 'grace period stops an instant re-tag');
+  target.immuneUntil = 0;
+  room.update();
+  assert.equal(room.it, target.id, 'no shield left: tagged');
+});
+
+test('hot potato: the bomb explodes on whoever is IT and adds a penalty', () => {
+  const { room, human } = roomWithHuman();
+  human.state.x = 100; human.state.y = 650; // keep away from everyone
+  for (const p of room.players.values()) if (p !== human) { p.state.x = 1100; p.state.y = 100; }
+  room.phaseTicks = BOMB_TICKS;
+  room.update();
+  assert.ok(room.bombFuse > 0, 'fuse lit');
+  room.bombFuse = 1;
+  const before = human.itTicks;
+  room.update();
+  assert.ok(human.itTicks >= before + BOMB_PENALTY, 'penalty applied');
+  assert.ok(human.state.frz > 0, 'holder stunned');
+  assert.ok(room.bombFuse > 0, 'fuse relit for the next holder');
 });

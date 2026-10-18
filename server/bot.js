@@ -44,9 +44,16 @@ export function botKeys(bot, room) {
       dy = ay / d + (ax / d) * 0.6 * side;
       dash = d < 110 && Math.random() < 0.3;
     } else {
-      wander(bot);
-      dx = Math.cos(bot.wander);
-      dy = Math.sin(bot.wander);
+      // Safe for now: grab a nearby power-up, else wander.
+      const u = nearestPickup(me, room, 380);
+      if (u) {
+        dx = u.x - me.x;
+        dy = u.y - me.y;
+      } else {
+        wander(bot);
+        dx = Math.cos(bot.wander);
+        dy = Math.sin(bot.wander);
+      }
     }
     // Wall repulsion.
     const m = 140;
@@ -63,6 +70,15 @@ export function botKeys(bot, room) {
   if (dash) keys |= K_DASH;
   bot.lastKeys = keys;
   return keys;
+}
+
+function nearestPickup(me, room, maxD) {
+  let best = null;
+  for (const u of room.pickups ?? []) {
+    const d = Math.hypot(u.x - me.x, u.y - me.y);
+    if (d < maxD) { maxD = d; best = u; }
+  }
+  return best;
 }
 
 function wander(bot) {

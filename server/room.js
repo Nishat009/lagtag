@@ -2,7 +2,10 @@
 // per-player input queues, server-side lag compensation, bots as filler.
 import {
   TICK_MS, SNAPSHOT_EVERY, MAX_PLAYERS, SPAWNS, COLORS, FREEZE_TICKS, IMMUNE_TICKS,
-  ROUND_TICKS, INTERMISSION_TICKS, MAX_REWIND_MS, TAG_SLOP,
+  ROUND_TICKS, INTERMISSION_TICKS, MAX_REWIND_MS, TAG_SLOP, RADIUS, WORLD_W, WORLD_H, OBSTACLES,
+  PW_SPEED, PW_SHIELD, PW_GHOST, SPEED_TICKS, GHOST_TICKS, SHIELD_GRACE,
+  PICKUP_RADIUS, PICKUP_EVERY, MAX_PICKUPS,
+  BOMB_TICKS, BOMB_FUSE_MIN, BOMB_FUSE_MAX, BOMB_PENALTY,
 } from '../shared/constants.js';
 import { createState, step, touching, packState } from '../shared/physics.js';
 import { History } from './history.js';
@@ -24,6 +27,10 @@ export class Room {
     this.history = new History(1000);
     this.round = 0;
     this.it = null;
+    this.pickups = []; // { id, kind, x, y }
+    this.nextPickupId = 1;
+    this.pickupTimer = 0;
+    this.bombFuse = 0; // ticks left on the hot-potato fuse; 0 = no bomb
     this.fillBots();
     this.startRound();
   }
@@ -58,6 +65,7 @@ export class Room {
       credits: MAX_CREDITS,
       itTicks: 0,
       immuneUntil: 0,
+      shield: false,
       lagComp: true,
       claims: [],
     };
@@ -83,6 +91,7 @@ export class Room {
     if (slotState) Object.assign(p.state, slotState);
     if (wasIt) this.it = p.id;
     p.itTicks = victim?.itTicks ?? 0;
+    p.shield = victim?.shield ?? false;
     this.broadcastRoster();
     return p;
   }
@@ -150,11 +159,13 @@ export class Room {
     }
 
     if (this.phase === 'play') {
+      this.updatePickups();
       const itP = this.players.get(this.it);
       if (itP) {
         itP.itTicks++;
         this.processClaims(itP) || this.contactTags(itP);
       }
+      this.updateBomb();
       if (--this.phaseTicks <= 0) this.endRound();
     } else if (--this.phaseTicks <= 0) {
       this.startRound();
@@ -204,6 +215,14 @@ export class Room {
   }
 
   doTag(from, to, comp) {
+    if (to.shield) {
+      // The shield soaks the tag and buys a moment to get away.
+      to.shield = false;
+      to.immuneUntil = this.tick + SHIELD_GRACE;
+      from.claims = [];
+      this.broadcast('event', { type: 'shield', from: from.id, to: to.id, at: { x: to.state.x, y: to.state.y } });
+      return;
+    }
     to.state.frz = FREEZE_TICKS;
     to.state.dash = 0;
     from.immuneUntil = this.tick + IMMUNE_TICKS;
@@ -213,6 +232,73 @@ export class Room {
       type: 'tag', from: from.id, to: to.id, comp,
       at: { x: (from.state.x + to.state.x) / 2, y: (from.state.y + to.state.y) / 2 },
     });
+  }
+
+  // ---- power-ups ---------------------------------------------------------------
+
+  updatePickups() {
+    if (this.pickups.length < MAX_PICKUPS && --this.pickupTimer <= 0) {
+      this.pickupTimer = PICKUP_EVERY;
+      this.spawnPickup();
+    }
+    const reach = RADIUS + PICKUP_RADIUS;
+    for (const p of this.players.values()) {
+      if (p.state.frz > 0) continue;
+      const i = this.pickups.findIndex((u) => Math.hypot(u.x - p.state.x, u.y - p.state.y) <= reach);
+      if (i < 0) continue;
+      const [u] = this.pickups.splice(i, 1);
+      this.grantPower(p, u.kind);
+      this.broadcast('event', { type: 'pickup', id: p.id, kind: u.kind, at: { x: u.x, y: u.y } });
+    }
+  }
+
+  grantPower(p, kind) {
+    if (kind === PW_SHIELD) {
+      p.shield = true;
+    } else {
+      p.state.pw = kind;
+      p.state.pt = kind === PW_SPEED ? SPEED_TICKS : GHOST_TICKS;
+    }
+  }
+
+  spawnPickup() {
+    const pad = PICKUP_RADIUS + 30;
+    for (let tries = 0; tries < 30; tries++) {
+      const x = Math.round(pad + Math.random() * (WORLD_W - pad * 2));
+      const y = Math.round(pad + Math.random() * (WORLD_H - pad * 2));
+      const inWall = OBSTACLES.some((r) => x > r.x - pad && x < r.x + r.w + pad && y > r.y - pad && y < r.y + r.h + pad);
+      const crowded = [...this.players.values()].some((p) => Math.hypot(p.state.x - x, p.state.y - y) < 140)
+        || this.pickups.some((u) => Math.hypot(u.x - x, u.y - y) < 200);
+      if (inWall || crowded) continue;
+      const kind = [PW_SPEED, PW_SHIELD, PW_GHOST][Math.floor(Math.random() * 3)];
+      this.pickups.push({ id: this.nextPickupId++, kind, x, y });
+      return;
+    }
+  }
+
+  // ---- hot potato --------------------------------------------------------------
+
+  updateBomb() {
+    if (this.phaseTicks > BOMB_TICKS) return;
+    if (this.bombFuse === 0) {
+      this.bombFuse = this.randomFuse();
+      this.broadcast('event', { type: 'bomb-start' });
+      return;
+    }
+    if (--this.bombFuse > 0) return;
+    const h = this.players.get(this.it);
+    if (h) {
+      h.itTicks += BOMB_PENALTY;
+      h.state.frz = FREEZE_TICKS;
+      h.state.dash = 0;
+      h.claims = [];
+      this.broadcast('event', { type: 'boom', id: h.id, penalty: BOMB_PENALTY / 60, at: { x: h.state.x, y: h.state.y } });
+    }
+    this.bombFuse = this.randomFuse();
+  }
+
+  randomFuse() {
+    return BOMB_FUSE_MIN + Math.floor(Math.random() * (BOMB_FUSE_MAX - BOMB_FUSE_MIN));
   }
 
   startRound() {
@@ -225,8 +311,12 @@ export class Room {
       Object.assign(p.state, createState(sp.x, sp.y));
       p.itTicks = 0;
       p.immuneUntil = 0;
+      p.shield = false;
       p.claims = [];
     });
+    this.pickups = [];
+    this.pickupTimer = PICKUP_EVERY / 2;
+    this.bombFuse = 0;
     const it = order[0];
     this.it = it.id;
     it.state.frz = FREEZE_TICKS * 1.5; // head start for everyone else
@@ -236,6 +326,8 @@ export class Room {
   endRound() {
     this.phase = 'end';
     this.phaseTicks = INTERMISSION_TICKS;
+    this.bombFuse = 0;
+    this.pickups = [];
     const ranking = [...this.players.values()]
       .sort((a, b) => a.itTicks - b.itTicks)
       .map((p) => ({ id: p.id, name: p.name, color: p.color, secs: +(p.itTicks / 60).toFixed(1) }));
@@ -252,9 +344,11 @@ export class Room {
       it: this.it,
       ph: this.phase === 'play' ? 0 : 1,
       left: this.phaseTicks,
+      bf: this.bombFuse,
       p: [...this.players.values()].map((p) => [
-        p.id, ...packState(p.state), p.ack, p.itTicks, p.immuneUntil > this.tick ? 1 : 0,
+        p.id, ...packState(p.state), p.ack, p.itTicks, p.immuneUntil > this.tick ? 1 : 0, p.shield ? 1 : 0,
       ]),
+      pu: this.pickups.map((u) => [u.id, u.kind, u.x, u.y]),
     };
     const str = JSON.stringify(msg);
     for (const p of this.players.values()) if (p.client) p.client.sendU(msg, str);

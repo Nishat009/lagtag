@@ -46,7 +46,7 @@ test('join fills the room with bots and streams snapshots over WebSocket', async
     seq++;
     socket.emit('u', { t: 'i', i: [[seq, K_RIGHT]] });
   }, 1000 / 60);
-  const later = await nextMessage((fn) => socket.on('u', fn), (m) => m.t === 's' && m.p.find((p) => p[0] === res.id)[10] >= 30);
+  const later = await nextMessage((fn) => socket.on('u', fn), (m) => m.t === 's' && m.p.find((p) => p[0] === res.id)[12] >= 30);
   clearInterval(timer);
   const me1 = later.p.find((p) => p[0] === res.id);
   assert.ok(me1[1] > me0[1] || me1[9] > 0, 'moved right (unless frozen as IT)');
@@ -90,7 +90,7 @@ test('WebRTC data channel to the server carries snapshots and inputs', { skip: !
 
   dc.send(JSON.stringify({ t: 'i', i: [[1, K_RIGHT], [2, K_RIGHT]] }));
   const acked = await nextMessage((fn) => { dc.onmessage = (e) => fn(JSON.parse(e.data)); },
-    (m) => m.t === 's' && m.p.find((p) => p[0] === res.id)[10] === 2);
+    (m) => m.t === 's' && m.p.find((p) => p[0] === res.id)[12] === 2);
   assert.ok(acked);
 
   pc.close();

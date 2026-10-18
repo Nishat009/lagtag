@@ -3,22 +3,28 @@
 import {
   DT, RADIUS, WORLD_W, WORLD_H, OBSTACLES, MAX_SPEED, IT_SPEED_MUL, ACCEL,
   DASH_SPEED, DASH_TICKS, DASH_COOLDOWN, K_UP, K_DOWN, K_LEFT, K_RIGHT, K_DASH,
+  PW_SPEED, PW_GHOST, SPEED_BOOST_MUL,
 } from './constants.js';
 
 const q2 = (v) => Math.round(v * 100) / 100;
 const q3 = (v) => Math.round(v * 1000) / 1000;
 
 export function createState(x, y) {
-  // dash/cd/frz are tick counters, dx/dy the locked dash direction
-  return { x, y, vx: 0, vy: 0, dash: 0, cd: 0, dx: 0, dy: 0, frz: 0 };
+  // dash/cd/frz are tick counters, dx/dy the locked dash direction,
+  // pw the active movement power-up and pt its ticks left
+  return { x, y, vx: 0, vy: 0, dash: 0, cd: 0, dx: 0, dy: 0, frz: 0, pw: 0, pt: 0 };
 }
 
 export function cloneState(s) {
-  return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, dash: s.dash, cd: s.cd, dx: s.dx, dy: s.dy, frz: s.frz };
+  return {
+    x: s.x, y: s.y, vx: s.vx, vy: s.vy, dash: s.dash, cd: s.cd, dx: s.dx, dy: s.dy, frz: s.frz,
+    pw: s.pw, pt: s.pt,
+  };
 }
 
 export function step(s, keys, isIt) {
   if (s.cd > 0) s.cd--;
+  if (s.pt > 0 && --s.pt === 0) s.pw = 0;
   if (s.frz > 0) {
     s.frz--;
     s.vx = 0;
@@ -45,7 +51,7 @@ export function step(s, keys, isIt) {
     s.vy = s.dy * DASH_SPEED;
     s.dash--;
   } else {
-    const max = MAX_SPEED * (isIt ? IT_SPEED_MUL : 1);
+    const max = MAX_SPEED * (isIt ? IT_SPEED_MUL : 1) * (s.pw === PW_SPEED ? SPEED_BOOST_MUL : 1);
     const a = Math.min(1, ACCEL * DT);
     s.vx += (ix * max - s.vx) * a;
     s.vy += (iy * max - s.vy) * a;
@@ -53,7 +59,7 @@ export function step(s, keys, isIt) {
 
   s.x += s.vx * DT;
   s.y += s.vy * DT;
-  collideWorld(s);
+  collideWorld(s, s.pw === PW_GHOST);
   // Quantise so the snapshot carries the *exact* server state: with a clean
   // network, client replay reproduces it bit-for-bit (zero correction).
   s.x = q2(s.x);
@@ -63,12 +69,14 @@ export function step(s, keys, isIt) {
   return s;
 }
 
-function collideWorld(s) {
+// A ghost passes through obstacles; when it wears off inside one, the
+// centre-inside branch of collideRect pushes it out.
+function collideWorld(s, ghost) {
   if (s.x < RADIUS) { s.x = RADIUS; if (s.vx < 0) s.vx = 0; }
   if (s.x > WORLD_W - RADIUS) { s.x = WORLD_W - RADIUS; if (s.vx > 0) s.vx = 0; }
   if (s.y < RADIUS) { s.y = RADIUS; if (s.vy < 0) s.vy = 0; }
   if (s.y > WORLD_H - RADIUS) { s.y = WORLD_H - RADIUS; if (s.vy > 0) s.vy = 0; }
-  for (const r of OBSTACLES) collideRect(s, r);
+  if (!ghost) for (const r of OBSTACLES) collideRect(s, r);
 }
 
 function collideRect(s, r) {
@@ -113,9 +121,14 @@ export function touching(a, b, slop = 0) {
 
 // Snapshot wire format for a player's physics state (compact array).
 export function packState(s) {
-  return [s.x, s.y, s.vx, s.vy, s.dash, s.cd, s.dx, s.dy, s.frz];
+  return [s.x, s.y, s.vx, s.vy, s.dash, s.cd, s.dx, s.dy, s.frz, s.pw, s.pt];
 }
 
+export const PACKED_LEN = 11;
+
 export function unpackState(a, o = 0) {
-  return { x: a[o], y: a[o + 1], vx: a[o + 2], vy: a[o + 3], dash: a[o + 4], cd: a[o + 5], dx: a[o + 6], dy: a[o + 7], frz: a[o + 8] };
+  return {
+    x: a[o], y: a[o + 1], vx: a[o + 2], vy: a[o + 3], dash: a[o + 4], cd: a[o + 5], dx: a[o + 6], dy: a[o + 7], frz: a[o + 8],
+    pw: a[o + 9], pt: a[o + 10],
+  };
 }

@@ -19,6 +19,7 @@
       <div class="hud-top">
         <div id="timer">1:30</div>
         <div class="room">room <b id="room-name">-</b> <button id="invite" type="button">Copy invite</button></div>
+        <button id="mute" type="button" title="Sound on/off (M)">🔊</button>
       </div>
       <ol id="scoreboard" aria-label="Time spent as IT (lowest wins)"></ol>
       <div id="it-banner" hidden>You're IT: tag someone!</div>
@@ -57,6 +58,8 @@
           <li><kbd>WASD</kbd>/<kbd>↑↓←→</kbd> move · <kbd>Space</kbd> dash</li>
           <li>Whoever is <b class="it">IT</b> chases. Touch someone to pass it on.</li>
           <li>Least seconds as IT after 90s wins. Bots fill empty seats.</li>
+          <li>Grab power-ups: ⚡ speed · 🛡 shield (blocks a tag) · 👻 ghost (through walls)</li>
+          <li>Last 15s: 💣 <b class="it">hot potato</b>. The bomb rides on IT and blows for +5s.</li>
         </ul>
       </div>
     </div>

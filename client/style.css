@@ -57,6 +57,19 @@ body.playing #hud { display: block; }
   border-radius: 10px;
   padding: 2px 14px;
 }
+#timer.hot {
+  color: #fff;
+  border-color: var(--it);
+  background: rgba(255, 59, 92, .25);
+  animation: shake .25s linear infinite;
+}
+@keyframes shake { 25% { transform: rotate(-2deg); } 75% { transform: rotate(2deg); } }
+#mute {
+  pointer-events: auto;
+  padding: 3px 9px;
+  font-size: 15px;
+  background: rgba(15, 18, 34, .8);
+}
 .room { color: var(--muted); font-size: 13px; pointer-events: auto; }
 .room b { color: var(--text); font-family: 'JetBrains Mono', monospace; }
 .room button { padding: 3px 9px; font-size: 12px; margin-left: 6px; }

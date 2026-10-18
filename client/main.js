@@ -1,5 +1,8 @@
-import { TICK_MS, SNAPSHOT_EVERY, DEFAULT_INTERP_MS, TICK_RATE } from '../shared/constants.js';
-import { unpackState, touching } from '../shared/physics.js';
+import {
+  TICK_MS, SNAPSHOT_EVERY, DEFAULT_INTERP_MS, TICK_RATE, DASH_TICKS, PW_SPEED, PW_SHIELD, PW_GHOST,
+} from '../shared/constants.js';
+import { unpackState, touching, PACKED_LEN } from '../shared/physics.js';
+import { sfx, unlock as unlockAudio, toggleMute, isMuted } from './sfx.js';
 import { NetSim } from './netsim.js';
 import { Net } from './net.js';
 import { ServerClock } from './clock.js';
@@ -38,6 +41,14 @@ const game = {
   lastK: -1,
   latest: null,
   latestTs: 0,
+  pickups: [],
+  bomb: 0,
+};
+
+const POWERS = {
+  [PW_SPEED]: { label: 'SPEED', icon: '⚡', color: '#ffd166', msg: 'Speed boost for 4s!' },
+  [PW_SHIELD]: { label: 'SHIELD', icon: '🛡', color: '#4cc9f0', msg: 'Shield: blocks the next tag' },
+  [PW_GHOST]: { label: 'GHOST', icon: '👻', color: '#c77dff', msg: 'Ghost: walk through walls for 3s' },
 };
 
 const stats = {
@@ -63,8 +74,9 @@ net.on('disconnect', () => toast('Disconnected from server — reload to rejoin'
 
 function onSnapshot(msg) {
   const players = new Map();
+  const o = 1 + PACKED_LEN;
   for (const a of msg.p) {
-    players.set(a[0], { ...unpackState(a, 1), ack: a[10], itTicks: a[11], imm: a[12] });
+    players.set(a[0], { ...unpackState(a, 1), ack: a[o], itTicks: a[o + 1], imm: a[o + 2], sh: a[o + 3] });
   }
   interp.push(msg.ts, players);
   clock.addSnapshot(msg.ts);
@@ -84,6 +96,8 @@ function onSnapshot(msg) {
   game.it = msg.it;
   game.phase = msg.ph;
   game.left = msg.left;
+  game.pickups = msg.pu ?? [];
+  game.bomb = msg.bf ?? 0;
 
   const me = players.get(game.myId);
   if (me) pred.onServerState(me, me.ack, msg.it === game.myId, settings);
@@ -91,8 +105,13 @@ function onSnapshot(msg) {
 
 function onEvent(e) {
   const name = (id) => (id === game.myId ? 'You' : game.roster.get(id)?.name ?? '???');
+  const color = (id) => game.roster.get(id)?.color ?? '#fff';
   if (e.type === 'tag') {
     renderer.addEffect({ type: 'ring', x: e.at.x, y: e.at.y, color: '#ff3b5c', life: 600 });
+    renderer.burst(e.at.x, e.at.y, [color(e.to), '#ff3b5c', '#fff'], 26, 260);
+    renderer.addEffect({ type: 'text', x: e.at.x, y: e.at.y - 30, text: 'TAG!', color: '#ff3b5c', size: 26, life: 900 });
+    if (e.to === game.myId) sfx.tagged();
+    else sfx.tag();
     if (e.comp) {
       renderer.addEffect({ type: 'rewind', x: e.comp.x, y: e.comp.y, label: `rewound ${e.comp.rewindMs} ms`, life: 1600 });
       logLine(`⏪ ${name(e.from)} → ${name(e.to)}: lag-compensated hit, target rewound ${e.comp.rewindMs} ms`);
@@ -105,6 +124,36 @@ function onEvent(e) {
     } else if (e.from === game.myId) {
       toast(`Tagged ${name(e.to)}!${e.comp ? ` (server rewound ${e.comp.rewindMs} ms)` : ''}`, 'good');
     }
+  } else if (e.type === 'pickup') {
+    const pw = POWERS[e.kind];
+    renderer.burst(e.at.x, e.at.y, [pw.color, '#fff'], 16, 160);
+    renderer.addEffect({ type: 'text', x: e.at.x, y: e.at.y - 24, text: `${pw.icon} ${pw.label}`, color: pw.color, size: 16, life: 1000 });
+    if (e.id === game.myId) {
+      sfx.pickup();
+      toast(`${pw.icon} ${pw.msg}`, 'good', 1800);
+    } else {
+      sfx.pickupFar();
+    }
+    logLine(`${pw.icon} ${name(e.id)} picked up ${pw.label.toLowerCase()}`);
+  } else if (e.type === 'shield') {
+    renderer.addEffect({ type: 'ring', x: e.at.x, y: e.at.y, color: '#4cc9f0', life: 500 });
+    renderer.burst(e.at.x, e.at.y, ['#4cc9f0', '#bde0fe', '#fff'], 30, 300);
+    renderer.addEffect({ type: 'text', x: e.at.x, y: e.at.y - 30, text: 'BLOCKED!', color: '#4cc9f0', size: 22, life: 900 });
+    sfx.shield();
+    if (e.to === game.myId) toast('🛡 Your shield blocked the tag. Run!', 'good');
+    else if (e.from === game.myId) toast(`🛡 ${name(e.to)} had a shield!`, 'bad');
+    logLine(`🛡 ${name(e.to)}'s shield blocked ${name(e.from)}`);
+  } else if (e.type === 'bomb-start') {
+    sfx.alarm();
+    toast('💣 HOT POTATO! The bomb is on IT: pass it before it blows', 'bad', 3500);
+  } else if (e.type === 'boom') {
+    renderer.addEffect({ type: 'boom', x: e.at.x, y: e.at.y, life: 700 });
+    renderer.burst(e.at.x, e.at.y, ['#ff9f1c', '#ff3b5c', '#ffd166', '#fff'], 60, 480);
+    renderer.addEffect({ type: 'text', x: e.at.x, y: e.at.y - 34, text: `💥 +${e.penalty}s`, color: '#ff9f1c', size: 28, life: 1400 });
+    renderer.kick(e.id === game.myId ? 30 : 14);
+    sfx.boom();
+    toast(e.id === game.myId ? `💥 The bomb blew up on you: +${e.penalty}s` : `💥 Boom! ${name(e.id)} gets +${e.penalty}s`, e.id === game.myId ? 'bad' : 'good');
+    logLine(`💥 Bomb exploded on ${name(e.id)} (+${e.penalty}s)`);
   } else if (e.type === 'round-start') {
     $('#round-end').hidden = true;
     toast(`Round ${e.round}: ${name(e.it)} ${e.it === game.myId ? 'are' : 'is'} IT`);
@@ -121,6 +170,7 @@ function onEvent(e) {
       }),
     );
     $('#round-end').hidden = false;
+    sfx.fanfare();
   }
 }
 
@@ -146,6 +196,7 @@ function frame(now) {
 function fixedTick() {
   if (!game.latest) return;
   pred.local(input.read(), game.it === game.myId, settings.predict);
+  if (pred.state?.dash === DASH_TICKS - 1) sfx.dash();
   net.sendU({ t: 'i', i: pred.pending.slice(-REDUNDANCY) });
 }
 
@@ -161,7 +212,7 @@ function draw(now) {
     const info = game.roster.get(id) ?? { name: '…', color: '#888' };
     const isMe = id === game.myId;
     let pos;
-    if (isMe) pos = pred.state ? { ...pred.renderPos(), frz: pred.state.frz, dash: pred.state.dash } : snap;
+    if (isMe) pos = pred.state ? { ...pred.renderPos(), frz: pred.state.frz, dash: pred.state.dash, pw: pred.state.pw } : snap;
     else if (settings.interp) pos = interp.sample(id, renderTime) ?? snap;
     else pos = snap;
 
@@ -169,6 +220,8 @@ function draw(now) {
       id, isMe, name: info.name, color: info.color,
       x: pos.x, y: pos.y, frz: pos.frz, dash: pos.dash,
       isIt: id === game.it, immune: snap.imm === 1,
+      pw: pos.pw ?? snap.pw, shield: snap.sh === 1,
+      bomb: id === game.it && game.phase === 0 ? game.bomb : 0,
     });
 
     if (settings.ghosts) {
@@ -179,9 +232,21 @@ function draw(now) {
   players.sort((a, b) => a.isMe - b.isMe);
 
   const itColor = game.it === game.myId ? '#ff3b5c' : null;
-  renderer.draw({ players, ghosts, itColor });
+  renderer.draw({ players, ghosts, itColor, pickups: game.pickups });
+  bombTicks(now);
   maybeClaimTag(settings.interp ? renderTime : game.latestTs, players, now);
   updateHud(now);
+}
+
+// The fuse ticks faster as it burns down.
+let lastBombTick = 0;
+function bombTicks(now) {
+  if (!game.bomb || game.phase !== 0) return;
+  const fuseMs = game.bomb * TICK_MS;
+  const gap = Math.max(90, Math.min(500, fuseMs / 6));
+  if (now - lastBombTick < gap) return;
+  lastBombTick = now;
+  sfx.tick(fuseMs < 1500);
 }
 
 // When I'm IT and *my screen* shows contact, tell the server what time I was
@@ -201,12 +266,16 @@ function maybeClaimTag(viewTime, players, now) {
 // ---- HUD --------------------------------------------------------------------------
 
 let hudAt = 0;
+let lastSecs = -1;
 function updateHud(now) {
   if (now - hudAt < 100) return;
   hudAt = now;
 
   const secs = Math.max(0, Math.ceil(game.left / TICK_RATE));
   $('#timer').textContent = game.phase === 0 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` : 'next round…';
+  $('#timer').classList.toggle('hot', game.phase === 0 && game.bomb > 0);
+  if (game.phase === 0 && secs !== lastSecs && secs >= 1 && secs <= 5) sfx.countdown(secs === 1);
+  lastSecs = game.phase === 0 ? secs : -1;
 
   const amIt = game.it === game.myId;
   const banner = $('#it-banner');
@@ -224,7 +293,8 @@ function updateHud(now) {
       if (id === game.it) li.classList.add('it');
       li.innerHTML = `<span class="dot"></span><span class="nm"></span><span class="sec"></span>`;
       li.querySelector('.dot').style.background = info.color;
-      li.querySelector('.nm').textContent = info.name + (id === game.it ? '  · IT' : '');
+      const badges = (s.sh ? ' 🛡' : '') + (s.pw ? ` ${POWERS[s.pw].icon}` : '') + (id === game.it ? (game.bomb ? '  · 💣' : '  · IT') : '');
+      li.querySelector('.nm').textContent = info.name + badges;
       li.querySelector('.sec').textContent = (s.itTicks / TICK_RATE).toFixed(1) + 's';
       return li;
     }),
@@ -331,6 +401,7 @@ function storedName() {
 }
 
 async function join(roomId) {
+  unlockAudio();
   const name = $('#name').value.trim() || `Player${Math.floor(Math.random() * 900 + 100)}`;
   try { localStorage.setItem('lagtag-name', name); } catch { /* private mode */ }
   $('#play').disabled = true;
@@ -378,6 +449,16 @@ function initLobby() {
       toast('Invite link copied: send it to up to 3 friends', 'good');
     } catch {
       toast(location.href);
+    }
+  });
+  const mute = $('#mute');
+  const showMute = () => { mute.textContent = isMuted() ? '🔇' : '🔊'; };
+  showMute();
+  mute.addEventListener('click', () => { unlockAudio(); toggleMute(); showMute(); mute.blur(); });
+  addEventListener('keydown', (e) => {
+    if (e.code === 'KeyM' && document.body.classList.contains('playing') && e.target.tagName !== 'INPUT') {
+      toggleMute();
+      showMute();
     }
   });
   if (matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
